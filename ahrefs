@@ -1,0 +1,663 @@
+#!/usr/bin/env python3
+"""
+Ahrefs CLI — SEO analytics from the command line.
+
+Usage:
+  ahrefs dr <target>                         # Domain Rating
+  ahrefs backlinks <target>                  # Backlink stats
+  ahrefs backlinks-list <target>             # List all backlinks
+  ahrefs refdomains <target>                 # Referring domains
+  ahrefs anchors <target>                    # Anchor texts
+  ahrefs outlinks <target>                   # Outgoing link stats
+  ahrefs metrics <target>                    # All site metrics
+  ahrefs organic <target>                    # Organic keywords
+  ahrefs top-pages <target>                  # Top pages by traffic
+  ahrefs competitors <target>                # Organic competitors
+  ahrefs dr-history <target>                 # DR over time
+  ahrefs metrics-history <target>            # Metrics over time
+  ahrefs pages-by-traffic <target>           # Pages ranked by traffic
+  ahrefs keyword <keyword>                   # Keyword overview
+  ahrefs volume-history <keyword>            # Search volume over time
+  ahrefs matching <keyword>                  # Matching terms
+  ahrefs related <keyword>                   # Related terms
+  ahrefs suggestions <keyword>               # Search suggestions
+  ahrefs serp <keyword>                      # SERP overview (top 100)
+  ahrefs batch <targets...>                  # Batch domain analysis
+  ahrefs usage                               # Show API usage this month
+
+Global options:
+  --country XX           Country code (default: us)
+  --date YYYY-MM-DD      Date for snapshot (default: today)
+  --limit N              Max results (default: 10)
+  --mode MODE            domain|subdomains|prefix|exact (default: subdomains)
+  --json                 Raw JSON output
+  --format FMT           Output format: table|csv|json (default: table)
+  --select FIELDS        Comma-separated fields to return (overrides defaults)
+  --where FILTER         Filter expression (e.g. "domain_rating>30")
+  --order-by FIELD       Sort by field (prefix with - for desc, e.g. "-traffic")
+  --date-from YYYY-MM-DD Start date for history commands
+
+Authentication:
+  Set AHREFS_API_KEY environment variable (API token from Ahrefs dashboard),
+  or configure a command in ~/.config/ahrefs/config.json:
+  { "api_key_command": "your-command-to-get-key" }
+"""
+
+import sys
+import json
+import os
+import subprocess
+import argparse
+import csv
+import io
+import urllib.request
+import urllib.error
+import urllib.parse
+from pathlib import Path
+from datetime import datetime, date, timedelta
+
+API_BASE = "https://api.ahrefs.com/v3"
+CONFIG_DIR = Path.home() / ".config" / "ahrefs"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+USAGE_FILE = CONFIG_DIR / "usage.json"
+
+# Default select fields per endpoint
+DEFAULT_SELECT = {
+    "all-backlinks": "url_from,url_to,anchor,domain_rating_source,first_seen,links_external",
+    "refdomains": "domain,domain_rating,backlinks,first_seen",
+    "anchors": "anchor,backlinks,refdomains",
+    "organic-keywords": "keyword,volume,position,traffic,url",
+    "top-pages": "url,organic_traffic,organic_keywords,top_keyword",
+    "organic-competitors": "domain,common_keywords,organic_traffic",
+    "pages-by-traffic": "url,organic_traffic,organic_keywords",
+    "keywords-overview": "keyword,volume,keyword_difficulty,cpc,global_volume",
+    "matching-terms": "keyword,volume,keyword_difficulty,cpc",
+    "related-terms": "keyword,volume,keyword_difficulty,cpc",
+    "search-suggestions": "keyword,volume,keyword_difficulty",
+    "serp-overview": "position,url,domain_rating,traffic",
+}
+
+
+def load_config() -> dict:
+    if CONFIG_FILE.exists():
+        try:
+            return json.loads(CONFIG_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def get_api_key() -> str:
+    """Get API key from env or config."""
+    key = os.environ.get("AHREFS_API_KEY")
+    if key:
+        return key
+
+    config = load_config()
+    cmd = config.get("api_key_command")
+    if cmd:
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception:
+            pass
+
+    print("ERROR: No API key found.")
+    print("Set AHREFS_API_KEY env var, or create ~/.config/ahrefs/config.json:")
+    print('  { "api_key_command": "your-command-to-get-key" }')
+    sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# REST API transport
+# ---------------------------------------------------------------------------
+
+def api_get(path: str, params: dict, api_key: str) -> tuple[dict, int]:
+    """Make a GET request to Ahrefs API v3. Returns (data, units_cost)."""
+    params = {k: v for k, v in params.items() if v is not None}
+    query = urllib.parse.urlencode(params, doseq=True)
+    url = f"{API_BASE}/{path}?{query}"
+
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            units = 50
+            cost_header = resp.headers.get("X-Api-Units-Cost")
+            if cost_header:
+                try:
+                    units = int(float(cost_header))
+                except (ValueError, TypeError):
+                    pass
+            return json.loads(resp.read()), units
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:500]
+        except Exception:
+            pass
+        if e.code == 429:
+            print("ERROR: Rate limited (60 req/min). Wait and retry.", file=sys.stderr)
+        elif e.code == 401:
+            print("ERROR: Invalid API key.", file=sys.stderr)
+        elif e.code == 403:
+            print("ERROR: Insufficient API permissions. Check your Ahrefs plan.", file=sys.stderr)
+        else:
+            print(f"ERROR: HTTP {e.code}: {e.reason}", file=sys.stderr)
+        if body:
+            try:
+                err = json.loads(body)
+                print(f"  {err.get('error', body)}", file=sys.stderr)
+            except json.JSONDecodeError:
+                print(f"  {body}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"ERROR: Connection failed: {e.reason}", file=sys.stderr)
+        sys.exit(1)
+    except TimeoutError:
+        print("ERROR: Request timed out (120s)", file=sys.stderr)
+        sys.exit(1)
+
+
+def api_post(path: str, body: dict, api_key: str) -> tuple[dict, int]:
+    """Make a POST request to Ahrefs API v3. Returns (data, units_cost)."""
+    url = f"{API_BASE}/{path}"
+    payload = json.dumps(body).encode()
+
+    req = urllib.request.Request(url, data=payload, headers={
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            units = 50
+            cost_header = resp.headers.get("X-Api-Units-Cost")
+            if cost_header:
+                try:
+                    units = int(float(cost_header))
+                except (ValueError, TypeError):
+                    pass
+            return json.loads(resp.read()), units
+    except urllib.error.HTTPError as e:
+        body_text = ""
+        try:
+            body_text = e.read().decode()[:500]
+        except Exception:
+            pass
+        print(f"ERROR: HTTP {e.code}: {e.reason}", file=sys.stderr)
+        if body_text:
+            print(f"  {body_text}", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Usage tracking
+# ---------------------------------------------------------------------------
+
+def init_usage() -> dict:
+    current_month = datetime.now().strftime("%Y-%m")
+    if USAGE_FILE.exists():
+        try:
+            data = json.loads(USAGE_FILE.read_text())
+            if data.get("month") == current_month:
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"month": current_month, "used": 0, "calls": 0, "history": []}
+
+
+def save_usage(data: dict):
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    USAGE_FILE.write_text(json.dumps(data, indent=2))
+
+
+def log_usage(tool: str, units: int = 50):
+    data = init_usage()
+    data["used"] += units
+    data["calls"] += 1
+    data["history"].append({
+        "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"),
+        "tool": tool,
+        "units": units
+    })
+    data["history"] = data["history"][-100:]
+    save_usage(data)
+    return data
+
+
+def show_usage():
+    data = init_usage()
+    print(f"\n  Ahrefs API Usage ({data['month']})")
+    print(f"  {'='*40}")
+    print(f"  Used:      {data['used']} units")
+    print(f"  Calls:     {data['calls']}")
+    print()
+    if data["history"]:
+        print("  Recent calls:")
+        for entry in data["history"][-10:]:
+            print(f"    {entry['timestamp']} | {entry['tool']} | {entry['units']} units")
+    else:
+        print("  No calls yet this month.")
+
+
+# ---------------------------------------------------------------------------
+# Output formatting
+# ---------------------------------------------------------------------------
+
+def truncate(s: str, max_len: int = 60) -> str:
+    s = str(s)
+    return s[:max_len - 1] + "…" if len(s) > max_len else s
+
+
+def format_table(rows: list[dict]) -> str:
+    """Format list of dicts as a readable table."""
+    if not rows:
+        return "(no results)"
+
+    cols = list(rows[0].keys())
+    # Calculate widths (capped)
+    widths = {}
+    for c in cols:
+        col_vals = [truncate(str(row.get(c, ""))) for row in rows]
+        widths[c] = min(max(len(str(c)), max(len(v) for v in col_vals)), 60)
+
+    header = " | ".join(str(c).ljust(widths[c]) for c in cols)
+    sep = "-+-".join("-" * widths[c] for c in cols)
+    lines = [header, sep]
+    for row in rows:
+        line = " | ".join(truncate(str(row.get(c, ""))).ljust(widths[c]) for c in cols)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def format_csv(rows: list[dict]) -> str:
+    """Format list of dicts as CSV."""
+    if not rows:
+        return ""
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+    writer.writeheader()
+    writer.writerows(rows)
+    return buf.getvalue()
+
+
+def format_kv(data: dict) -> str:
+    """Format a single dict as key: value pairs."""
+    lines = []
+    for k, v in data.items():
+        lines.append(f"  {k}: {v}")
+    return "\n".join(lines)
+
+
+def extract_rows(data: dict) -> list | dict:
+    """Find the data payload in Ahrefs response."""
+    for key in ["positions", "keywords", "pages", "backlinks", "refdomains",
+                 "anchors", "competitors", "items", "rows", "results",
+                 "domains", "suggestions", "terms", "metrics"]:
+        if key in data and isinstance(data[key], list):
+            return data[key]
+    return data
+
+
+def output(data: dict, args, endpoint: str, units: int = 50):
+    """Output result and track usage."""
+    fmt = getattr(args, "format", None) or ("json" if getattr(args, "json", False) else "table")
+
+    if fmt == "json":
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+    else:
+        items = extract_rows(data)
+
+        if isinstance(items, list):
+            if not items:
+                print("(no results)")
+            elif not isinstance(items[0], dict):
+                print("\n".join(str(r) for r in items))
+            elif fmt == "csv":
+                print(format_csv(items))
+            else:
+                print(format_table(items))
+        elif isinstance(items, dict):
+            print(format_kv(items))
+        else:
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+
+    usage = log_usage(endpoint, units)
+    print(f"\n  Cost: {units} units | Month total: {usage['used']} units", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def today() -> str:
+    return date.today().strftime("%Y-%m-%d")
+
+
+def one_year_ago() -> str:
+    return (date.today() - timedelta(days=365)).strftime("%Y-%m-%d")
+
+
+def get_select(args, endpoint_key: str) -> str | None:
+    """Get select fields: user override or default."""
+    if hasattr(args, "select") and args.select:
+        return args.select
+    return DEFAULT_SELECT.get(endpoint_key)
+
+
+def add_filters(params: dict, args) -> dict:
+    """Add optional where and order_by from args."""
+    if hasattr(args, "where") and args.where:
+        params["where"] = args.where
+    if hasattr(args, "order_by") and args.order_by:
+        params["order_by"] = args.order_by
+    return params
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+def cmd_dr(args, api_key):
+    data, units = api_get("site-explorer/domain-rating", {
+        "target": args.target,
+        "date": args.date or today(),
+    }, api_key)
+    output(data, args, "domain-rating", units)
+
+def cmd_backlinks(args, api_key):
+    params = {
+        "target": args.target,
+        "protocol": getattr(args, "protocol", "both") or "both",
+    }
+    data, units = api_get("site-explorer/backlinks-stats", params, api_key)
+    output(data, args, "backlinks-stats", units)
+
+def cmd_backlinks_list(args, api_key):
+    params = add_filters({
+        "target": args.target,
+        "select": get_select(args, "all-backlinks"),
+        "mode": args.mode,
+        "limit": args.limit,
+    }, args)
+    data, units = api_get("site-explorer/all-backlinks", params, api_key)
+    output(data, args, "all-backlinks", units)
+
+def cmd_refdomains(args, api_key):
+    params = add_filters({
+        "target": args.target,
+        "select": get_select(args, "refdomains"),
+        "mode": args.mode,
+        "limit": args.limit,
+    }, args)
+    data, units = api_get("site-explorer/refdomains", params, api_key)
+    output(data, args, "refdomains", units)
+
+def cmd_anchors(args, api_key):
+    params = add_filters({
+        "target": args.target,
+        "select": get_select(args, "anchors"),
+        "mode": args.mode,
+        "limit": args.limit,
+    }, args)
+    data, units = api_get("site-explorer/anchors", params, api_key)
+    output(data, args, "anchors", units)
+
+def cmd_outlinks(args, api_key):
+    data, units = api_get("site-explorer/outlinks-stats", {
+        "target": args.target,
+    }, api_key)
+    output(data, args, "outlinks-stats", units)
+
+def cmd_metrics(args, api_key):
+    data, units = api_get("site-explorer/metrics", {
+        "target": args.target,
+        "date": args.date or today(),
+    }, api_key)
+    output(data, args, "metrics", units)
+
+def cmd_organic(args, api_key):
+    params = add_filters({
+        "target": args.target,
+        "select": get_select(args, "organic-keywords"),
+        "date": args.date or today(),
+        "country": args.country,
+        "mode": args.mode,
+        "limit": args.limit,
+    }, args)
+    data, units = api_get("site-explorer/organic-keywords", params, api_key)
+    output(data, args, "organic-keywords", units)
+
+def cmd_top_pages(args, api_key):
+    params = add_filters({
+        "target": args.target,
+        "select": get_select(args, "top-pages"),
+        "date": args.date or today(),
+        "country": args.country,
+        "mode": args.mode,
+        "limit": args.limit,
+    }, args)
+    data, units = api_get("site-explorer/top-pages", params, api_key)
+    output(data, args, "top-pages", units)
+
+def cmd_competitors(args, api_key):
+    params = add_filters({
+        "target": args.target,
+        "select": get_select(args, "organic-competitors"),
+        "date": args.date or today(),
+        "country": args.country,
+        "mode": args.mode,
+        "limit": args.limit,
+    }, args)
+    data, units = api_get("site-explorer/organic-competitors", params, api_key)
+    output(data, args, "organic-competitors", units)
+
+def cmd_dr_history(args, api_key):
+    data, units = api_get("site-explorer/domain-rating-history", {
+        "target": args.target,
+        "date_from": args.date_from or one_year_ago(),
+    }, api_key)
+    output(data, args, "domain-rating-history", units)
+
+def cmd_metrics_history(args, api_key):
+    data, units = api_get("site-explorer/metrics-history", {
+        "target": args.target,
+        "date_from": args.date_from or one_year_ago(),
+    }, api_key)
+    output(data, args, "metrics-history", units)
+
+def cmd_pages_by_traffic(args, api_key):
+    params = add_filters({
+        "target": args.target,
+        "select": get_select(args, "pages-by-traffic"),
+        "date": args.date or today(),
+        "country": args.country,
+        "mode": args.mode,
+        "limit": args.limit,
+    }, args)
+    data, units = api_get("site-explorer/pages-by-traffic", params, api_key)
+    output(data, args, "pages-by-traffic", units)
+
+# Keywords Explorer
+
+def cmd_keyword(args, api_key):
+    params = {
+        "keywords": ",".join(args.keywords),
+        "select": get_select(args, "keywords-overview"),
+        "country": args.country,
+    }
+    data, units = api_get("keywords-explorer/overview", params, api_key)
+    output(data, args, "keywords-overview", units)
+
+def cmd_volume_history(args, api_key):
+    data, units = api_get("keywords-explorer/volume-history", {
+        "keywords": ",".join(args.keywords),
+        "country": args.country,
+    }, api_key)
+    output(data, args, "volume-history", units)
+
+def cmd_matching(args, api_key):
+    params = add_filters({
+        "keyword": args.keyword,
+        "select": get_select(args, "matching-terms"),
+        "country": args.country,
+        "limit": args.limit,
+    }, args)
+    data, units = api_get("keywords-explorer/matching-terms", params, api_key)
+    output(data, args, "matching-terms", units)
+
+def cmd_related(args, api_key):
+    params = add_filters({
+        "keyword": args.keyword,
+        "select": get_select(args, "related-terms"),
+        "country": args.country,
+        "limit": args.limit,
+    }, args)
+    data, units = api_get("keywords-explorer/related-terms", params, api_key)
+    output(data, args, "related-terms", units)
+
+def cmd_suggestions(args, api_key):
+    params = {
+        "keyword": args.keyword,
+        "select": get_select(args, "search-suggestions"),
+        "country": args.country,
+        "limit": args.limit,
+    }
+    data, units = api_get("keywords-explorer/search-suggestions", params, api_key)
+    output(data, args, "search-suggestions", units)
+
+# SERP & Batch
+
+def cmd_serp(args, api_key):
+    params = {
+        "keyword": args.keyword,
+        "country": args.country,
+        "select": get_select(args, "serp-overview"),
+    }
+    data, units = api_get("serp-overview/serp-overview", params, api_key)
+    output(data, args, "serp-overview", units)
+
+def cmd_batch(args, api_key):
+    data, units = api_get("batch-analysis/batch-analysis", {
+        "targets": ",".join(args.targets),
+    }, api_key)
+    output(data, args, "batch-analysis", units)
+
+def cmd_usage(args, api_key):
+    show_usage()
+
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="ahrefs",
+        description="Ahrefs SEO Analytics CLI — domain analysis, keyword research, backlinks, and SERP data via Ahrefs REST API v3.",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    def add_common(p, target=True, keyword=False, keywords=False):
+        if target:
+            p.add_argument("target", help="Domain or URL to analyze")
+        if keyword:
+            p.add_argument("keyword", help="Keyword to research")
+        if keywords:
+            p.add_argument("keywords", nargs="+", help="Keywords to research")
+        p.add_argument("--country", default="us", help="Country code (default: us)")
+        p.add_argument("--date", help="Date YYYY-MM-DD (default: today)")
+        p.add_argument("--date-from", help="Start date for history commands")
+        p.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
+        p.add_argument("--mode", default="subdomains",
+                       choices=["domain", "subdomains", "prefix", "exact"],
+                       help="Analysis mode (default: subdomains)")
+        p.add_argument("--select", help="Comma-separated fields to return (overrides defaults)")
+        p.add_argument("--where", help="Filter expression (e.g. 'domain_rating>30')")
+        p.add_argument("--order-by", help="Sort field (prefix with - for desc, e.g. '-traffic')")
+        p.add_argument("--json", action="store_true", help="Raw JSON output")
+        p.add_argument("--format", choices=["table", "csv", "json"], default="table",
+                       help="Output format (default: table)")
+        p.add_argument("--protocol", choices=["both", "http", "https"], default="both",
+                       help="Protocol filter (default: both)")
+        return p
+
+    # Site Explorer
+    add_common(sub.add_parser("dr", help="Domain Rating"))
+    add_common(sub.add_parser("backlinks", help="Backlink statistics"))
+    add_common(sub.add_parser("backlinks-list", help="List all backlinks"))
+    add_common(sub.add_parser("refdomains", help="Referring domains"))
+    add_common(sub.add_parser("anchors", help="Anchor texts"))
+    add_common(sub.add_parser("outlinks", help="Outgoing link stats"))
+    add_common(sub.add_parser("metrics", help="All site metrics"))
+    add_common(sub.add_parser("organic", help="Organic keywords"))
+    add_common(sub.add_parser("top-pages", help="Top pages by traffic"))
+    add_common(sub.add_parser("competitors", help="Organic competitors"))
+    add_common(sub.add_parser("dr-history", help="Domain Rating history"))
+    add_common(sub.add_parser("metrics-history", help="Metrics history"))
+    add_common(sub.add_parser("pages-by-traffic", help="Pages ranked by organic traffic"))
+
+    # Keywords Explorer
+    add_common(sub.add_parser("keyword", help="Keyword overview"), target=False, keywords=True)
+    add_common(sub.add_parser("volume-history", help="Search volume history"), target=False, keywords=True)
+    add_common(sub.add_parser("matching", help="Matching keyword terms"), target=False, keyword=True)
+    add_common(sub.add_parser("related", help="Related keyword terms"), target=False, keyword=True)
+    add_common(sub.add_parser("suggestions", help="Search suggestions"), target=False, keyword=True)
+
+    # SERP
+    add_common(sub.add_parser("serp", help="SERP overview (top 100)"), target=False, keyword=True)
+
+    # Batch
+    p = sub.add_parser("batch", help="Batch domain analysis")
+    p.add_argument("targets", nargs="+", help="Domains to analyze")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--format", choices=["table", "csv", "json"], default="table")
+
+    # Usage
+    sub.add_parser("usage", help="Show API usage this month")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(0)
+
+    api_key = get_api_key() if args.command != "usage" else ""
+
+    commands = {
+        "dr": cmd_dr,
+        "backlinks": cmd_backlinks,
+        "backlinks-list": cmd_backlinks_list,
+        "refdomains": cmd_refdomains,
+        "anchors": cmd_anchors,
+        "outlinks": cmd_outlinks,
+        "metrics": cmd_metrics,
+        "organic": cmd_organic,
+        "top-pages": cmd_top_pages,
+        "competitors": cmd_competitors,
+        "dr-history": cmd_dr_history,
+        "metrics-history": cmd_metrics_history,
+        "pages-by-traffic": cmd_pages_by_traffic,
+        "keyword": cmd_keyword,
+        "volume-history": cmd_volume_history,
+        "matching": cmd_matching,
+        "related": cmd_related,
+        "suggestions": cmd_suggestions,
+        "serp": cmd_serp,
+        "batch": cmd_batch,
+        "usage": cmd_usage,
+    }
+
+    fn = commands.get(args.command)
+    if fn:
+        fn(args, api_key)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
