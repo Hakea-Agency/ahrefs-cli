@@ -28,32 +28,32 @@
 
   <!-- Command 1: DR -->
   <text x="16" y="58">
-    <tspan class="prompt">❯ </tspan><tspan class="cmd">ahrefs dr hakea.fi</tspan>
+    <tspan class="prompt">❯ </tspan><tspan class="cmd">ahrefs dr stripe.com</tspan>
   </text>
-  <text x="16" y="80" class="data">  domain_rating: 42</text>
-  <text x="16" y="96" class="data">  ahrefs_rank: 318,402</text>
+  <text x="16" y="80" class="data">  domain_rating: 91</text>
+  <text x="16" y="96" class="data">  ahrefs_rank: 87</text>
   <text x="16" y="118" class="dim">  Cost: 50 units | Month total: 50 units</text>
 
   <!-- Command 2: Organic -->
   <text x="16" y="150">
-    <tspan class="prompt">❯ </tspan><tspan class="cmd">ahrefs organic hakea.fi --country fi --limit 5</tspan>
+    <tspan class="prompt">❯ </tspan><tspan class="cmd">ahrefs organic stripe.com --country us --limit 5</tspan>
   </text>
   <text x="16" y="174" class="header">keyword                       | volume | position | traffic | url</text>
   <text x="16" y="190" class="sep">------------------------------+--------+----------+---------+-----------------------------</text>
-  <text x="16" y="206" class="data">hakukoneoptimointi             | 1,900  | 4        | 312     | hakea.fi/seo</text>
-  <text x="16" y="222" class="data">seo toimisto                   | 720    | 3        | 198     | hakea.fi/</text>
-  <text x="16" y="238" class="data">google mainonta                | 1,300  | 7        | 87      | hakea.fi/sea</text>
-  <text x="16" y="254" class="data">hakukonemarkkinointi           | 590    | 5        | 64      | hakea.fi/</text>
-  <text x="16" y="270" class="data">hakukonemainonta hinta         | 480    | 6        | 41      | hakea.fi/sea/hinta</text>
+  <text x="16" y="206" class="data">stripe                         | 823K   | 1        | 284,100 | stripe.com/</text>
+  <text x="16" y="222" class="data">stripe login                   | 201K   | 1        | 91,400  | stripe.com/login</text>
+  <text x="16" y="238" class="data">payment processing             | 18,100 | 3        | 4,820   | stripe.com/payments</text>
+  <text x="16" y="254" class="data">online payments                | 12,400 | 4        | 2,710   | stripe.com/payments</text>
+  <text x="16" y="270" class="data">stripe pricing                 | 9,900  | 1        | 2,340   | stripe.com/pricing</text>
   <text x="16" y="292" class="dim">  Cost: 50 units | Month total: 100 units</text>
 
   <!-- Command 3: Keyword -->
   <text x="16" y="324">
-    <tspan class="prompt">❯ </tspan><tspan class="cmd">ahrefs keyword "seo" --country fi</tspan>
+    <tspan class="prompt">❯ </tspan><tspan class="cmd">ahrefs keyword "payment gateway" --country us</tspan>
   </text>
-  <text x="16" y="348" class="header">keyword | volume | keyword_difficulty | cpc  | global_volume</text>
-  <text x="16" y="364" class="sep">--------+--------+--------------------+------+--------------</text>
-  <text x="16" y="380" class="data">seo     | 4,400  | 48                 | 3.20 | 1,220,000</text>
+  <text x="16" y="348" class="header">keyword          | volume | keyword_difficulty | cpc   | global_volume</text>
+  <text x="16" y="364" class="sep">-----------------+--------+--------------------+-------+--------------</text>
+  <text x="16" y="380" class="data">payment gateway  | 40,500 | 72                 | 12.80 | 198,000</text>
   <text x="16" y="402" class="dim">  Cost: 50 units | Month total: 150 units</text>
 
   <!-- Cursor -->
