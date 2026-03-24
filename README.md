@@ -1,5 +1,9 @@
 # Ahrefs CLI
 
+<p align="center">
+  <img src="assets/demo.svg" alt="Ahrefs CLI demo" width="680">
+</p>
+
 SEO analytics from the command line. Domain analysis, keyword research, backlink data, and SERP overview — powered by the [Ahrefs API v3](https://docs.ahrefs.com/api).
 
 Python 3.10+, zero dependencies (stdlib only).
@@ -16,6 +20,14 @@ Python 3.10+, zero dependencies (stdlib only).
 - **Field Selection** — `--select` to choose fields and reduce API costs
 
 ## Installation
+
+### pip (recommended)
+
+```bash
+pip install git+https://github.com/Hakea-Agency/ahrefs-cli.git
+```
+
+### Manual
 
 ```bash
 git clone https://github.com/Hakea-Agency/ahrefs-cli.git
@@ -154,9 +166,9 @@ ahrefs backlinks-list example.com --where "domain_rating_source>20" --limit 50
 
 Check your plan's monthly limit in [Ahrefs dashboard](https://app.ahrefs.com/account/limits-and-usage/web).
 
-## OpenClaw Skill
+## Agent Integration
 
-The `skill/` directory contains an [OpenClaw](https://openclaw.ai) agent skill for integrating the CLI into AI agent workflows.
+The `skill/` directory contains an [OpenClaw](https://openclaw.ai) agent skill for integrating the CLI into AI agent workflows. This lets AI assistants use Ahrefs data programmatically.
 
 ## License
 
